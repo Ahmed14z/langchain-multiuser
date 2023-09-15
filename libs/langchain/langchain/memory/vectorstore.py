@@ -67,10 +67,10 @@ class VectorStoreRetrieverMemory(BaseMemory):
         page_content = "\n".join(texts)
         return [Document(page_content=page_content)]
 
-    def save_context(self, inputs: Dict[str, Any], outputs: Dict[str, str]) -> None:
+    def save_context(self, inputs: Dict[str, Any], outputs: Dict[str, str],user_id:str) -> None:
         """Save context from this conversation to buffer."""
         documents = self._form_documents(inputs, outputs)
-        self.retriever.add_documents(documents)
+        self.retriever.add_documents(documents,user_id=user_id)
 
     def clear(self) -> None:
         """Nothing to clear."""
