@@ -88,6 +88,8 @@ class SupabaseVectorStore(VectorStore):
         client: supabase.client.Client,
         embedding: Embeddings,
         table_name: str,
+        user_id : str,
+
         query_name: Union[str, None] = None,
     ) -> None:
         """Initialize with supabase client."""
@@ -103,6 +105,7 @@ class SupabaseVectorStore(VectorStore):
         self._embedding: Embeddings = embedding
         self.table_name = table_name or "documents"
         self.query_name = query_name or "match_documents"
+        self.user_id = "a"+user_id
 
     @property
     def embeddings(self) -> Embeddings:
@@ -111,21 +114,24 @@ class SupabaseVectorStore(VectorStore):
     def add_texts(
         self,
         texts: Iterable[str],
+        user_id:str,
         metadatas: Optional[List[Dict[Any, Any]]] = None,
         ids: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> List[str]:
         ids = ids or [str(uuid.uuid4()) for _ in texts]
         docs = self._texts_to_documents(texts, metadatas)
-
         vectors = self._embedding.embed_documents(list(texts))
-        return self.add_vectors(vectors, docs, ids)
+        user_id = self.user_id
+        return self.add_vectors(vectors, docs, ids,user_id)
 
     @classmethod
     def from_texts(
         cls: Type["SupabaseVectorStore"],
         texts: List[str],
         embedding: Embeddings,
+        user_id:str,
+
         metadatas: Optional[List[dict]] = None,
         client: Optional[supabase.client.Client] = None,
         table_name: Optional[str] = "documents",
@@ -144,13 +150,14 @@ class SupabaseVectorStore(VectorStore):
         embeddings = embedding.embed_documents(texts)
         ids = [str(uuid.uuid4()) for _ in texts]
         docs = cls._texts_to_documents(texts, metadatas)
-        cls._add_vectors(client, table_name, embeddings, docs, ids)
+        cls._add_vectors(client, table_name, embeddings,user_id, docs, ids)
 
         return cls(
             client=client,
             embedding=embedding,
             table_name=table_name,
             query_name=query_name,
+            user_id= user_id
         )
 
     def add_vectors(
@@ -158,8 +165,10 @@ class SupabaseVectorStore(VectorStore):
         vectors: List[List[float]],
         documents: List[Document],
         ids: List[str],
+        user_id: str,  # Add user_ids parameter
+
     ) -> List[str]:
-        return self._add_vectors(self._client, self.table_name, vectors, documents, ids)
+        return self._add_vectors(self._client, self.table_name, vectors, documents, ids, user_id)
 
     def similarity_search(
         self,
@@ -168,8 +177,10 @@ class SupabaseVectorStore(VectorStore):
         filter: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> List[Document]:
-        vector = self._embedding.embed_query(query)
-        return self.similarity_search_by_vector(vector, k=k, filter=filter, **kwargs)
+        vectors = self._embedding.embed_documents([query])
+        return self.similarity_search_by_vector(
+            vectors[0], k=k, filter=filter, **kwargs
+        )
 
     def similarity_search_by_vector(
         self,
@@ -178,6 +189,13 @@ class SupabaseVectorStore(VectorStore):
         filter: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> List[Document]:
+
+
+        # if filter:
+        #     filter["userid"] = self.user_id
+        # else:
+        #     filter = {"userid": self.user_id}
+
         result = self.similarity_search_by_vector_with_relevance_scores(
             embedding, k=k, filter=filter, **kwargs
         )
@@ -189,48 +207,39 @@ class SupabaseVectorStore(VectorStore):
     def similarity_search_with_relevance_scores(
         self,
         query: str,
+        user_id:str,
         k: int = 4,
         filter: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
-        vector = self._embedding.embed_query(query)
+        vectors = self._embedding.embed_documents([query])
         return self.similarity_search_by_vector_with_relevance_scores(
-            vector, k=k, filter=filter
+            vectors[0], k=k, filter=filter,user_id=user_id
         )
 
     def match_args(
-        self, query: List[float], filter: Optional[Dict[str, Any]]
+        self, query: List[float], user_id: str, k: int, filter: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        ret: Dict[str, Any] = dict(query_embedding=query)
+        ret = dict(query_embedding=query,user_id=user_id, match_count=k)
         if filter:
             ret["filter"] = filter
         return ret
 
     def similarity_search_by_vector_with_relevance_scores(
-        self,
-        query: List[float],
-        k: int,
-        filter: Optional[Dict[str, Any]] = None,
-        postgrest_filter: Optional[str] = None,
+        self, query: List[float], k: int, user_id: str, filter: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[Document, float]]:
-        match_documents_params = self.match_args(query, filter)
-        query_builder = self._client.rpc(self.query_name, match_documents_params)
-
-        if postgrest_filter:
-            query_builder.params = query_builder.params.set(
-                "and", f"({postgrest_filter})"
-            )
-
-        query_builder.params = query_builder.params.set("limit", k)
-
-        res = query_builder.execute()
+        match_documents_params = self.match_args(query,user_id, k, filter)
+        res = self._client.rpc(self.query_name, match_documents_params).execute()
+        print("we have user : " + user_id)
 
         match_result = [
             (
                 Document(
                     metadata=search.get("metadata", {}),  # type: ignore
                     page_content=search.get("content", ""),
+                    user_id=user_id
                 ),
+
                 search.get("similarity", 0.0),
             )
             for search in res.data
@@ -240,36 +249,25 @@ class SupabaseVectorStore(VectorStore):
         return match_result
 
     def similarity_search_by_vector_returning_embeddings(
-        self,
-        query: List[float],
-        k: int,
-        filter: Optional[Dict[str, Any]] = None,
-        postgrest_filter: Optional[str] = None,
+        self, query: List[float],user_id:str ,k: int, filter: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[Document, float, np.ndarray[np.float32, Any]]]:
-        match_documents_params = self.match_args(query, filter)
-        query_builder = self._client.rpc(self.query_name, match_documents_params)
-
-        if postgrest_filter:
-            query_builder.params = query_builder.params.set(
-                "and", f"({postgrest_filter})"
-            )
-
-        query_builder.params = query_builder.params.set("limit", k)
-
-        res = query_builder.execute()
-
+        match_documents_params = self.match_args(query, user_id,k, filter)
+        res = self._client.rpc(self.query_name, match_documents_params).execute()
         match_result = [
             (
                 Document(
                     metadata=search.get("metadata", {}),  # type: ignore
                     page_content=search.get("content", ""),
+                    userid = user_id
                 ),
                 search.get("similarity", 0.0),
+
                 # Supabase returns a vector type as its string represation (!).
                 # This is a hack to convert the string to numpy array.
                 np.fromstring(
                     search.get("embedding", "").strip("[]"), np.float32, sep=","
                 ),
+
             )
             for search in res.data
             if search.get("content")
@@ -300,8 +298,11 @@ class SupabaseVectorStore(VectorStore):
         vectors: List[List[float]],
         documents: List[Document],
         ids: List[str],
+        user_id:str,  # Add user_ids parameter
+
     ) -> List[str]:
         """Add vectors to Supabase table."""
+        print(f"user_id received: {user_id}")
 
         rows: List[Dict[str, Any]] = [
             {
@@ -309,6 +310,9 @@ class SupabaseVectorStore(VectorStore):
                 "content": documents[idx].page_content,
                 "embedding": embedding,
                 "metadata": documents[idx].metadata,  # type: ignore
+                "userid" :   user_id
+
+                # "userid" : documents
             }
             for idx, embedding in enumerate(vectors)
         ]
@@ -431,9 +435,9 @@ class SupabaseVectorStore(VectorStore):
         $$;
         ```
         """
-        embedding = self._embedding.embed_query(query)
+        embedding = self._embedding.embed_documents([query])
         docs = self.max_marginal_relevance_search_by_vector(
-            embedding, k, fetch_k, lambda_mult=lambda_mult
+            embedding[0], k, fetch_k, lambda_mult=lambda_mult
         )
         return docs
 
