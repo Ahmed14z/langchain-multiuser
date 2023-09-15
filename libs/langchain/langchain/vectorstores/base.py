@@ -41,6 +41,7 @@ class VectorStore(ABC):
     def add_texts(
         self,
         texts: Iterable[str],
+        user_id:str,
         metadatas: Optional[List[dict]] = None,
         **kwargs: Any,
     ) -> List[str]:
@@ -86,7 +87,7 @@ class VectorStore(ABC):
         """Run more texts through the embeddings and add to the vectorstore."""
         raise NotImplementedError
 
-    def add_documents(self, documents: List[Document], **kwargs: Any) -> List[str]:
+    def add_documents(self, documents: List[Document],user_id:str, **kwargs: Any) -> List[str]:
         """Run more documents through the embeddings and add to the vectorstore.
 
         Args:
@@ -198,6 +199,7 @@ class VectorStore(ABC):
     def _similarity_search_with_relevance_scores(
         self,
         query: str,
+        user_id: str,
         k: int = 4,
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
@@ -219,12 +221,13 @@ class VectorStore(ABC):
             List of Tuples of (doc, similarity_score)
         """
         relevance_score_fn = self._select_relevance_score_fn()
-        docs_and_scores = self.similarity_search_with_score(query, k, **kwargs)
+        docs_and_scores = self.similarity_search_with_score(query, user_id, k, **kwargs)
         return [(doc, relevance_score_fn(score)) for doc, score in docs_and_scores]
 
     def similarity_search_with_relevance_scores(
         self,
         query: str,
+        user_id : str,
         k: int = 4,
         **kwargs: Any,
     ) -> List[Tuple[Document, float]]:
@@ -245,7 +248,7 @@ class VectorStore(ABC):
         score_threshold = kwargs.pop("score_threshold", None)
 
         docs_and_similarities = self._similarity_search_with_relevance_scores(
-            query, k=k, **kwargs
+            query,user_id, k=k, **kwargs
         )
         if any(
             similarity < 0.0 or similarity > 1.0
@@ -270,7 +273,7 @@ class VectorStore(ABC):
         return docs_and_similarities
 
     async def asimilarity_search_with_relevance_scores(
-        self, query: str, k: int = 4, **kwargs: Any
+        self, query: str,user_id: str , k: int = 4,**kwargs: Any
     ) -> List[Tuple[Document, float]]:
         """Return docs most similar to query."""
 
@@ -597,9 +600,9 @@ class VectorStoreRetriever(BaseRetriever):
             raise ValueError(f"search_type of {self.search_type} not allowed.")
         return docs
 
-    def add_documents(self, documents: List[Document], **kwargs: Any) -> List[str]:
+    def add_documents(self, documents: List[Document],user_id:str, **kwargs: Any) -> List[str]:
         """Add documents to vectorstore."""
-        return self.vectorstore.add_documents(documents, **kwargs)
+        return self.vectorstore.add_documents(documents, user_id=user_id,**kwargs)
 
     async def aadd_documents(
         self, documents: List[Document], **kwargs: Any
